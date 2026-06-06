@@ -158,6 +158,55 @@ func TestParseRetryDelay_HumanReadableDuration(t *testing.T) {
 	}
 }
 
+func TestAntigravityStatusErr_QuotaExhaustedUsesFixedCooldown(t *testing.T) {
+	body := []byte(`{
+		"error": {
+			"code": 429,
+			"message": "You have exhausted your capacity on this model. Your quota will reset after 149h7m12s.",
+			"status": "RESOURCE_EXHAUSTED",
+			"details": [
+				{
+					"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+					"reason": "QUOTA_EXHAUSTED",
+					"domain": "cloudcode-pa.googleapis.com",
+					"metadata": {
+						"model": "claude-opus-4-6-thinking",
+						"quotaResetDelay": "149h7m12s"
+					}
+				}
+			]
+		}
+	}`)
+	err := newAntigravityStatusErr(http.StatusTooManyRequests, body)
+	retryAfter := err.RetryAfter()
+	if retryAfter == nil {
+		t.Fatal("RetryAfter() = nil")
+	}
+	if *retryAfter != antigravityQuotaExhaustedCooldown {
+		t.Fatalf("RetryAfter() = %v, want %v", *retryAfter, antigravityQuotaExhaustedCooldown)
+	}
+}
+
+func TestAntigravityStatusErr_RateLimitKeepsShortRetryDelay(t *testing.T) {
+	body := []byte(`{
+		"error": {
+			"status": "RESOURCE_EXHAUSTED",
+			"details": [
+				{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT_EXCEEDED"},
+				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "2s"}
+			]
+		}
+	}`)
+	err := newAntigravityStatusErr(http.StatusTooManyRequests, body)
+	retryAfter := err.RetryAfter()
+	if retryAfter == nil {
+		t.Fatal("RetryAfter() = nil")
+	}
+	if *retryAfter != 2*time.Second {
+		t.Fatalf("RetryAfter() = %v, want 2s", *retryAfter)
+	}
+}
+
 func TestAntigravityExecute_RetriesTransient429ResourceExhausted(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)

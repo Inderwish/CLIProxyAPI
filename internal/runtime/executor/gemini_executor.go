@@ -220,6 +220,9 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	if geminiFakeStreamEnabled(e.cfg) {
+		return e.executeFakeStream(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	apiKey, bearer := geminiCreds(auth)
@@ -356,6 +359,100 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *GeminiExecutor) executeFakeStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	apiKey, bearer := geminiCreds(auth)
+
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("gemini")
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalPayload := originalPayloadSource
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return nil, err
+	}
+
+	body = fixGeminiImageAspectRatio(baseModel, body)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, requestPath)
+	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body, _ = sjson.DeleteBytes(body, "session_id")
+
+	baseURL := resolveGeminiBaseURL(auth)
+	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "generateContent")
+	if opts.Alt != "" {
+		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("x-goog-api-key", apiKey)
+	} else if bearer != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	applyGeminiHeaders(httpReq, auth)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      body,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("gemini executor: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, err
+	}
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
+	return geminiFakeStreamResult(ctx, httpResp.Header.Clone(), from, to, req.Model, opts.OriginalRequest, body, data), nil
 }
 
 // CountTokens counts tokens for the given request using the Gemini API.

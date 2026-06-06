@@ -3846,6 +3846,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opt
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	var forced []creditsCandidateEntry
 	var known []creditsCandidateEntry
 	var unknown []creditsCandidateEntry
 	for _, auth := range m.auths {
@@ -3867,6 +3868,15 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opt
 			continue
 		}
 
+		if forceAntigravityCreditsFromAuth(auth) {
+			forced = append(forced, creditsCandidateEntry{
+				auth:     auth.Clone(),
+				executor: executor,
+				provider: providerKey,
+			})
+			continue
+		}
+
 		hint, okHint := GetAntigravityCreditsHint(auth.ID)
 		if okHint && hint.Known {
 			if !hint.Available {
@@ -3885,13 +3895,17 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(routeModel string, opt
 			provider: providerKey,
 		})
 	}
+	sort.Slice(forced, func(i, j int) bool {
+		return forced[i].auth.ID < forced[j].auth.ID
+	})
 	sort.Slice(known, func(i, j int) bool {
 		return known[i].auth.ID < known[j].auth.ID
 	})
 	sort.Slice(unknown, func(i, j int) bool {
 		return unknown[i].auth.ID < unknown[j].auth.ID
 	})
-	return append(known, unknown...)
+	candidates := append(forced, known...)
+	return append(candidates, unknown...)
 }
 
 type creditsCandidateEntry struct {
@@ -3904,6 +3918,26 @@ func hasAntigravityProvider(providers []string) bool {
 	for _, p := range providers {
 		if strings.EqualFold(strings.TrimSpace(p), "antigravity") {
 			return true
+		}
+	}
+	return false
+}
+
+func forceAntigravityCreditsFromAuth(auth *Auth) bool {
+	if auth == nil || len(auth.Metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"force_antigravity_credits",
+		"force-antigravity-credits",
+		"forceAntigravityCredits",
+		"antigravity_credits_force",
+		"antigravity-credits-force",
+	} {
+		if raw, ok := auth.Metadata[key]; ok {
+			if parsed, okParse := parseBoolAny(raw); okParse {
+				return parsed
+			}
 		}
 	}
 	return false

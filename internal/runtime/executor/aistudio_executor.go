@@ -195,6 +195,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	if geminiFakeStreamEnabled(e.cfg) {
+		return e.executeFakeStream(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
@@ -369,6 +372,64 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		}
 	}(firstEvent)
 	return &cliproxyexecutor.StreamResult{Headers: firstEvent.Headers.Clone(), Chunks: out}, nil
+}
+
+func (e *AIStudioExecutor) executeFakeStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	translatedReq, body, err := e.translateRequest(req, opts, false)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := e.buildEndpoint(baseModel, body.action, opts.Alt)
+	wsReq := &wsrelay.HTTPRequest{
+		Method:  http.MethodPost,
+		URL:     endpoint,
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+		Body:    body.payload,
+	}
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: wsReq.Headers}, attrs)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       endpoint,
+		Method:    http.MethodPost,
+		Headers:   wsReq.Headers.Clone(),
+		Body:      body.payload,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	wsResp, err := e.relay.NonStream(ctx, authID, wsReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return nil, err
+	}
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, wsResp.Status, wsResp.Headers.Clone())
+	if len(wsResp.Body) > 0 {
+		helps.AppendAPIResponseChunk(ctx, e.cfg, wsResp.Body)
+	}
+	if wsResp.Status < 200 || wsResp.Status >= 300 {
+		err = statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
+		return nil, err
+	}
+	reporter.Publish(ctx, helps.ParseGeminiUsage(wsResp.Body))
+	return geminiFakeStreamResult(ctx, wsResp.Headers.Clone(), opts.SourceFormat, body.toFormat, req.Model, opts.OriginalRequest, translatedReq, wsResp.Body), nil
 }
 
 // CountTokens counts tokens for the given request using the AI Studio API.

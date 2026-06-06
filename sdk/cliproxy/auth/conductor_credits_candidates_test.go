@@ -12,6 +12,7 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 		auths: map[string]*Auth{
 			"zz-credits": {ID: "zz-credits", Provider: "antigravity"},
 			"aa-unknown": {ID: "aa-unknown", Provider: "antigravity"},
+			"bb-force":   {ID: "bb-force", Provider: "antigravity", Metadata: map[string]any{"force_antigravity_credits": true}},
 			"mm-no":      {ID: "mm-no", Provider: "antigravity"},
 		},
 		executors: map[string]ProviderExecutor{
@@ -29,18 +30,26 @@ func TestFindAllAntigravityCreditsCandidateAuths_PrefersKnownCreditsThenUnknown(
 		Available: false,
 		UpdatedAt: time.Now(),
 	})
+	SetAntigravityCreditsHint("bb-force", AntigravityCreditsHint{
+		Known:     true,
+		Available: false,
+		UpdatedAt: time.Now(),
+	})
 
 	opts := cliproxyexecutor.Options{}
 
 	candidates := m.findAllAntigravityCreditsCandidateAuths("claude-sonnet-4-6", opts)
-	if len(candidates) != 2 {
-		t.Fatalf("candidates len = %d, want 2", len(candidates))
+	if len(candidates) != 3 {
+		t.Fatalf("candidates len = %d, want 3", len(candidates))
 	}
-	if candidates[0].auth.ID != "zz-credits" {
-		t.Fatalf("candidates[0].auth.ID = %q, want %q", candidates[0].auth.ID, "zz-credits")
+	if candidates[0].auth.ID != "bb-force" {
+		t.Fatalf("candidates[0].auth.ID = %q, want %q", candidates[0].auth.ID, "bb-force")
 	}
-	if candidates[1].auth.ID != "aa-unknown" {
-		t.Fatalf("candidates[1].auth.ID = %q, want %q", candidates[1].auth.ID, "aa-unknown")
+	if candidates[1].auth.ID != "zz-credits" {
+		t.Fatalf("candidates[1].auth.ID = %q, want %q", candidates[1].auth.ID, "zz-credits")
+	}
+	if candidates[2].auth.ID != "aa-unknown" {
+		t.Fatalf("candidates[2].auth.ID = %q, want %q", candidates[2].auth.ID, "aa-unknown")
 	}
 
 	nonClaude := m.findAllAntigravityCreditsCandidateAuths("gemini-3-flash", opts)

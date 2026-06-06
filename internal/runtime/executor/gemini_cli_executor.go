@@ -270,6 +270,9 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	if geminiFakeStreamEnabled(e.cfg) {
+		return e.executeFakeStream(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)
@@ -485,6 +488,144 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if len(lastBody) > 0 {
 		helps.AppendAPIResponseChunk(ctx, e.cfg, lastBody)
 	}
+	if lastStatus == 0 {
+		lastStatus = 429
+	}
+	err = newGeminiStatusErr(lastStatus, lastBody)
+	return nil, err
+}
+
+func (e *GeminiCLIExecutor) executeFakeStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)
+	if err != nil {
+		return nil, err
+	}
+
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("gemini-cli")
+
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalPayload := originalPayloadSource
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+	basePayload := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	basePayload, err = thinking.ApplyThinking(basePayload, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return nil, err
+	}
+
+	basePayload = fixGeminiCLIImageAspectRatio(baseModel, basePayload)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	basePayload = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "gemini", "request", basePayload, originalTranslated, requestedModel, requestPath)
+
+	projectID := resolveGeminiProjectID(auth)
+	models := cliPreviewFallbackOrder(baseModel)
+	if len(models) == 0 || models[0] != baseModel {
+		models = append([]string{baseModel}, models...)
+	}
+
+	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+
+	var lastStatus int
+	var lastBody []byte
+
+	for idx, attemptModel := range models {
+		payload := append([]byte(nil), basePayload...)
+		payload = setJSONField(payload, "project", projectID)
+		payload = setJSONField(payload, "model", attemptModel)
+
+		tok, errTok := tokenSource.Token()
+		if errTok != nil {
+			err = errTok
+			return nil, err
+		}
+		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
+
+		url := fmt.Sprintf("%s/%s:%s", codeAssistEndpoint, codeAssistVersion, "generateContent")
+		if opts.Alt != "" {
+			url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		}
+
+		reqHTTP, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if errReq != nil {
+			err = errReq
+			return nil, err
+		}
+		reqHTTP.Header.Set("Content-Type", "application/json")
+		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+		applyGeminiCLIHeaders(reqHTTP, attemptModel)
+		reqHTTP.Header.Set("Accept", "application/json")
+		if auth != nil {
+			util.ApplyCustomHeadersFromAttrs(reqHTTP, auth.Attributes)
+		}
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   reqHTTP.Header.Clone(),
+			Body:      payload,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+
+		httpResp, errDo := httpClient.Do(reqHTTP)
+		if errDo != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errDo)
+			err = errDo
+			return nil, err
+		}
+
+		data, errRead := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("gemini cli executor: close response body error: %v", errClose)
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if errRead != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			err = errRead
+			return nil, err
+		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
+			reporter.Publish(ctx, helps.ParseGeminiCLIUsage(data))
+			return geminiFakeStreamResult(respCtx, httpResp.Header.Clone(), from, to, attemptModel, opts.OriginalRequest, payload, data), nil
+		}
+
+		lastStatus = httpResp.StatusCode
+		lastBody = append([]byte(nil), data...)
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		if httpResp.StatusCode == 429 {
+			if idx+1 < len(models) {
+				log.Debugf("gemini cli executor: rate limited, retrying with next model: %s", models[idx+1])
+			} else {
+				log.Debug("gemini cli executor: rate limited, no additional fallback model")
+			}
+			continue
+		}
+
+		err = newGeminiStatusErr(httpResp.StatusCode, data)
+		return nil, err
+	}
+
 	if lastStatus == 0 {
 		lastStatus = 429
 	}

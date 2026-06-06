@@ -54,6 +54,7 @@ const (
 	refreshSkew                            = 3000 * time.Second
 	antigravityCreditsHintRefreshInterval  = 10 * time.Minute
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
+	antigravityQuotaExhaustedCooldown      = 90 * time.Minute
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
@@ -506,11 +507,23 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
 	if statusCode == http.StatusTooManyRequests {
-		if retryAfter, parseErr := parseRetryDelay(body); parseErr == nil && retryAfter != nil {
+		if retryAfter := antigravityRetryAfterForStatus(statusCode, body); retryAfter != nil {
 			err.retryAfter = retryAfter
 		}
 	}
 	return err
+}
+
+func antigravityRetryAfterForStatus(statusCode int, body []byte) *time.Duration {
+	if statusCode != http.StatusTooManyRequests {
+		return nil
+	}
+	decision := decideAntigravity429(body)
+	if decision.kind == antigravity429DecisionFullQuotaExhausted {
+		cooldown := antigravityQuotaExhaustedCooldown
+		return &cooldown
+	}
+	return decision.retryAfter
 }
 
 // Execute performs a non-streaming request to the Antigravity API.
@@ -1635,7 +1648,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		}
 		sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
 		if httpResp.StatusCode == http.StatusTooManyRequests {
-			if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
+			if retryAfter := antigravityRetryAfterForStatus(httpResp.StatusCode, bodyBytes); retryAfter != nil {
 				sErr.retryAfter = retryAfter
 			}
 		}
@@ -1646,7 +1659,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 	case lastStatus != 0:
 		sErr := statusErr{code: lastStatus, msg: string(lastBody)}
 		if lastStatus == http.StatusTooManyRequests {
-			if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
+			if retryAfter := antigravityRetryAfterForStatus(lastStatus, lastBody); retryAfter != nil {
 				sErr.retryAfter = retryAfter
 			}
 		}

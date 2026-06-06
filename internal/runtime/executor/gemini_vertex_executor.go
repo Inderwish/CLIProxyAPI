@@ -268,10 +268,16 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errCreds != nil {
 			return nil, errCreds
 		}
+		if geminiFakeStreamEnabled(e.cfg) {
+			return e.executeFakeStreamWithServiceAccount(ctx, auth, req, opts, projectID, location, saJSON)
+		}
 		return e.executeStreamWithServiceAccount(ctx, auth, req, opts, projectID, location, saJSON)
 	}
 
 	// Use API key authentication
+	if geminiFakeStreamEnabled(e.cfg) {
+		return e.executeFakeStreamWithAPIKey(ctx, auth, req, opts, apiKey, baseURL)
+	}
 	return e.executeStreamWithAPIKey(ctx, auth, req, opts, apiKey, baseURL)
 }
 
@@ -549,6 +555,223 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
+}
+
+func (e *GeminiVertexExecutor) executeFakeStreamWithServiceAccount(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, projectID, location string, saJSON []byte) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("gemini")
+
+	var body []byte
+	if isImagenModel(baseModel) {
+		body, err = convertToImagenRequest(req.Payload)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		originalPayloadSource := req.Payload
+		if len(opts.OriginalRequest) > 0 {
+			originalPayloadSource = opts.OriginalRequest
+		}
+		originalPayload := originalPayloadSource
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+		body = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		if err != nil {
+			return nil, err
+		}
+
+		body = fixGeminiImageAspectRatio(baseModel, body)
+		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+		requestPath := helps.PayloadRequestPath(opts)
+		body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, requestPath)
+		body, _ = sjson.SetBytes(body, "model", baseModel)
+		body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+	}
+
+	action := getVertexAction(baseModel, false)
+	baseURL := vertexBaseURL(location)
+	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, projectID, location, baseModel, action)
+	if opts.Alt != "" && action != "countTokens" {
+		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+	}
+	body, _ = sjson.DeleteBytes(body, "session_id")
+
+	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if errNewReq != nil {
+		return nil, errNewReq
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if token, errTok := vertexAccessToken(ctx, e.cfg, auth, saJSON); errTok == nil && token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	} else if errTok != nil {
+		log.Errorf("vertex executor: access token error: %v", errTok)
+		return nil, statusErr{code: 500, msg: "internal server error"}
+	}
+	applyGeminiHeaders(httpReq, auth)
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      body,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, errDo := httpClient.Do(httpReq)
+	if errDo != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
+		return nil, errDo
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("vertex executor: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, err
+	}
+	data, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		return nil, errRead
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
+	if isImagenModel(baseModel) {
+		data = convertImagenToGeminiResponse(data, baseModel)
+	}
+	return geminiFakeStreamResult(ctx, httpResp.Header.Clone(), from, to, req.Model, opts.OriginalRequest, body, data), nil
+}
+
+func (e *GeminiVertexExecutor) executeFakeStreamWithAPIKey(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, apiKey, baseURL string) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("gemini")
+
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalPayload := originalPayloadSource
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return nil, err
+	}
+
+	body = fixGeminiImageAspectRatio(baseModel, body)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, requestPath)
+	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
+
+	action := getVertexAction(baseModel, false)
+	if baseURL == "" {
+		baseURL = "https://aiplatform.googleapis.com"
+	}
+	url := fmt.Sprintf("%s/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, baseModel, action)
+	if opts.Alt != "" && action != "countTokens" {
+		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+	}
+	body, _ = sjson.DeleteBytes(body, "session_id")
+
+	httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if errNewReq != nil {
+		return nil, errNewReq
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("x-goog-api-key", apiKey)
+	}
+	applyGeminiHeaders(httpReq, auth)
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      body,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, errDo := httpClient.Do(httpReq)
+	if errDo != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
+		return nil, errDo
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("vertex executor: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		b, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, err
+	}
+	data, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		return nil, errRead
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	reporter.Publish(ctx, helps.ParseGeminiUsage(data))
+	if isImagenModel(baseModel) {
+		data = convertImagenToGeminiResponse(data, baseModel)
+	}
+	return geminiFakeStreamResult(ctx, httpResp.Header.Clone(), from, to, req.Model, opts.OriginalRequest, body, data), nil
 }
 
 // executeStreamWithServiceAccount handles streaming authentication using service account credentials.

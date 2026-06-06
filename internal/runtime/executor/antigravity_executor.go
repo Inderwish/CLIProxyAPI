@@ -2476,6 +2476,12 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 
 	if isImageModel {
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
+		// Auto-inject responseModalities for image models so the upstream
+		// API produces image output even when the client does not send an
+		// explicit modalities field.
+		if !gjson.GetBytes(template, "request.generationConfig.responseModalities").Exists() {
+			template, _ = sjson.SetRawBytes(template, "request.generationConfig.responseModalities", []byte(`["IMAGE", "TEXT"]`))
+		}
 	} else {
 		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
 		template, _ = sjson.SetBytes(template, "request.sessionId", generateStableSessionID(payload))

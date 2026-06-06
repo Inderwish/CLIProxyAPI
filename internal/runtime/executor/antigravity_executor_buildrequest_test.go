@@ -343,3 +343,96 @@ func assertSchemaSanitizedAndPropertyPreserved(t *testing.T, params map[string]a
 		t.Fatalf("deprecated should be removed from nested schema")
 	}
 }
+
+func TestAntigravityBuildRequest_ImageModelAutoInjectsResponseModalities(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-flash-image", []byte(`{
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "generate an image of a cat"}]
+				}
+			]
+		}
+	}`))
+
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid type")
+	}
+	genConfig, ok := request["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig should be auto-injected for image models")
+	}
+	mods, ok := genConfig["responseModalities"].([]any)
+	if !ok {
+		t.Fatalf("responseModalities should be auto-injected for image models")
+	}
+	foundImage, foundText := false, false
+	for _, m := range mods {
+		switch m.(string) {
+		case "IMAGE":
+			foundImage = true
+		case "TEXT":
+			foundText = true
+		}
+	}
+	if !foundImage || !foundText {
+		t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]", mods)
+	}
+}
+
+func TestAntigravityBuildRequest_ImageModelDoesNotOverwriteExistingResponseModalities(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-flash-image", []byte(`{
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "hi"}]
+				}
+			],
+			"generationConfig": {
+				"responseModalities": ["TEXT"]
+			}
+		}
+	}`))
+
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid type")
+	}
+	genConfig, ok := request["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid type")
+	}
+	mods, ok := genConfig["responseModalities"].([]any)
+	if !ok {
+		t.Fatalf("responseModalities missing")
+	}
+	if len(mods) != 1 || mods[0].(string) != "TEXT" {
+		t.Fatalf("existing responseModalities should not be overwritten, got %v", mods)
+	}
+}
+
+func TestAntigravityBuildRequest_NonImageModelDoesNotInjectResponseModalities(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.1-pro", []byte(`{
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "hello"}]
+				}
+			]
+		}
+	}`))
+
+	request, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request missing or invalid type")
+	}
+	if genConfig, ok := request["generationConfig"].(map[string]any); ok {
+		if _, ok := genConfig["responseModalities"]; ok {
+			t.Fatalf("responseModalities should not be injected for non-image models")
+		}
+	}
+}

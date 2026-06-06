@@ -259,6 +259,10 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	fakeStream := geminiFakeStreamEnabled(e.cfg) || geminiFakeStreamModel(req.Model)
+	if fakeStream {
+		req.Model = stripGeminiFakeStreamSuffix(req.Model)
+	}
 	// Try API key authentication first
 	apiKey, baseURL := vertexAPICreds(auth)
 
@@ -268,14 +272,14 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errCreds != nil {
 			return nil, errCreds
 		}
-		if geminiFakeStreamEnabled(e.cfg) {
+		if fakeStream {
 			return e.executeFakeStreamWithServiceAccount(ctx, auth, req, opts, projectID, location, saJSON)
 		}
 		return e.executeStreamWithServiceAccount(ctx, auth, req, opts, projectID, location, saJSON)
 	}
 
 	// Use API key authentication
-	if geminiFakeStreamEnabled(e.cfg) {
+	if fakeStream {
 		return e.executeFakeStreamWithAPIKey(ctx, auth, req, opts, apiKey, baseURL)
 	}
 	return e.executeStreamWithAPIKey(ctx, auth, req, opts, apiKey, baseURL)

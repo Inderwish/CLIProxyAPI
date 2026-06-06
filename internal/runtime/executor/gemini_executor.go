@@ -220,7 +220,8 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	if geminiFakeStreamEnabled(e.cfg) {
+	if geminiFakeStreamEnabled(e.cfg) || geminiFakeStreamModel(req.Model) {
+		req.Model = stripGeminiFakeStreamSuffix(req.Model)
 		return e.executeFakeStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName

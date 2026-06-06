@@ -3,14 +3,25 @@ package executor
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+const geminiFakeStreamSuffix = "-fakestream"
+
 func geminiFakeStreamEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.Streaming.GeminiFakeStream
+}
+
+func geminiFakeStreamModel(model string) bool {
+	return strings.HasSuffix(model, geminiFakeStreamSuffix)
+}
+
+func stripGeminiFakeStreamSuffix(model string) string {
+	return strings.TrimSuffix(model, geminiFakeStreamSuffix)
 }
 
 func geminiFakeStreamHeaders(headers http.Header) http.Header {

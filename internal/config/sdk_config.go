@@ -63,9 +63,4 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
-
-	// GeminiFakeStream makes Gemini-family executors call the non-streaming upstream endpoint
-	// for streaming downstream requests, then emit the translated response as stream chunks.
-	// Default is false.
-	GeminiFakeStream bool `yaml:"gemini-fake-stream,omitempty" json:"gemini-fake-stream,omitempty"`
 }

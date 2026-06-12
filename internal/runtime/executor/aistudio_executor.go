@@ -195,7 +195,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	if geminiFakeStreamEnabled(e.cfg) || geminiFakeStreamModel(req.Model) {
+	if geminiFakeStreamModel(req.Model) {
 		req.Model = stripGeminiFakeStreamSuffix(req.Model)
 		return e.executeFakeStream(ctx, auth, req, opts)
 	}

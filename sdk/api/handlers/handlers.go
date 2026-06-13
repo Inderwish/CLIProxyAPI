@@ -933,11 +933,12 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
+	providerLookupModel := routeProviderLookupModel(baseModel)
 
-	if strings.EqualFold(routeModelBaseName(baseModel), "gpt-image-2") && !allowImageModel {
+	if strings.EqualFold(routeModelBaseName(providerLookupModel), "gpt-image-2") && !allowImageModel {
 		return nil, "", &interfaces.ErrorMessage{
 			StatusCode: http.StatusServiceUnavailable,
-			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(baseModel)),
+			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(providerLookupModel)),
 		}
 	}
 
@@ -945,14 +946,14 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		return []string{"home"}, resolvedModelName, nil
 	}
 
-	providers = util.GetProviderName(baseModel)
+	providers = util.GetProviderName(providerLookupModel)
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
 	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
 	// custom model registrations that include thinking suffixes.
-	if len(providers) == 0 && baseModel != resolvedModelName {
-		providers = util.GetProviderName(resolvedModelName)
+	if len(providers) == 0 && providerLookupModel != resolvedModelName {
+		providers = util.GetProviderName(routeProviderLookupModel(resolvedModelName))
 	}
 
 	if len(providers) == 0 {
@@ -968,6 +969,17 @@ func routeModelBaseName(model string) string {
 	model = strings.TrimSpace(model)
 	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
 		return strings.TrimSpace(model[idx+1:])
+	}
+	return model
+}
+
+func routeProviderLookupModel(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.Index(model, "[假流]"); idx >= 0 {
+		model = strings.TrimSpace(model[:idx])
+	}
+	if parsed := thinking.ParseSuffix(model); parsed.HasSuffix {
+		return strings.TrimSpace(parsed.ModelName)
 	}
 	return model
 }

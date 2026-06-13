@@ -16,7 +16,7 @@ import (
 
 const (
 	antigravityReleasesURL     = "https://antigravity-auto-updater-974169037036.us-central1.run.app/releases"
-	antigravityFallbackVersion = "1.21.9"
+	antigravityFallbackVersion = "1.23.2"
 	antigravityVersionCacheTTL = 6 * time.Hour
 	antigravityFetchTimeout    = 10 * time.Second
 	AntigravityNodeAPIClientUA = "google-api-nodejs-client/10.3.0"
@@ -99,8 +99,33 @@ func AntigravityLatestVersion() string {
 		antigravityVersionMu.RUnlock()
 		return v
 	}
+	cached := cachedAntigravityVersion
 	antigravityVersionMu.RUnlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), antigravityFetchTimeout)
+	defer cancel()
+	version, errFetch := fetchAntigravityLatestVersion(ctx)
+
+	antigravityVersionMu.Lock()
+	defer antigravityVersionMu.Unlock()
+
+	now := time.Now()
+	if errFetch == nil {
+		cachedAntigravityVersion = version
+		antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
+		log.WithField("version", version).Info("fetched latest antigravity version")
+		return version
+	}
+
+	if cached != "" && cached != antigravityFallbackVersion {
+		antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
+		log.WithError(errFetch).Warn("failed to refresh antigravity version, using cached version")
+		return cached
+	}
+
+	cachedAntigravityVersion = antigravityFallbackVersion
+	antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
+	log.WithError(errFetch).Warn("failed to refresh antigravity version, using fallback version")
 	return antigravityFallbackVersion
 }
 
@@ -204,9 +229,16 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
 		return "", errors.New("antigravity releases API returned empty list")
 	}
 
-	version := releases[0].Version
+	version := ""
+	for _, release := range releases {
+		candidate := strings.TrimSpace(release.Version)
+		if strings.HasPrefix(candidate, "1.") {
+			version = candidate
+			break
+		}
+	}
 	if version == "" {
-		return "", errors.New("antigravity releases API returned empty version")
+		return "", errors.New("antigravity releases API returned no compatible version")
 	}
 
 	return version, nil

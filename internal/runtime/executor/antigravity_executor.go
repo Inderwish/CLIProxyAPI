@@ -1196,6 +1196,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	if geminiFakeStreamModel(req.Model) {
+		return e.executeFakeStream(ctx, auth, req, opts)
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	ctx = context.WithValue(ctx, "alt", "")
@@ -1458,6 +1461,162 @@ attemptLoop:
 	}
 
 	return nil, err
+}
+
+func (e *AntigravityExecutor) executeFakeStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	req.Model = strings.TrimSpace(stripGeminiFakeStreamSuffix(req.Model))
+	if req.Model == "" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "empty model after fake stream suffix"}
+	}
+
+	out := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(out)
+
+		heartbeat := antigravityFakeStreamHeartbeatChunk(opts.SourceFormat, req.Model)
+		if heartbeat != nil {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: heartbeat}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-done:
+					return
+				case <-ticker.C:
+					if heartbeat == nil {
+						continue
+					}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: heartbeat}:
+					case <-ctx.Done():
+						return
+					case <-done:
+						return
+					}
+				}
+			}
+		}()
+
+		resp, errExecute := e.Execute(ctx, auth, req, opts)
+		close(done)
+		if errExecute != nil {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errExecute}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		for _, chunk := range antigravityFinalFakeStreamChunks(opts.SourceFormat, req.Model, resp.Payload) {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return &cliproxyexecutor.StreamResult{Headers: geminiFakeStreamHeaders(nil), Chunks: out}, nil
+}
+
+func antigravityFinalFakeStreamChunks(format sdktranslator.Format, model string, payload []byte) [][]byte {
+	if format == sdktranslator.FormatOpenAI {
+		return antigravityOpenAIChatFakeStreamChunks(model, payload)
+	}
+	return [][]byte{
+		append(append([]byte("data: "), payload...), []byte("\n\n")...),
+		[]byte("data: [DONE]\n\n"),
+	}
+}
+
+func antigravityFakeStreamHeartbeatChunk(format sdktranslator.Format, model string) []byte {
+	if format != sdktranslator.FormatOpenAI {
+		return []byte(": keep-alive\n\n")
+	}
+	created := time.Now().Unix()
+	chunk := map[string]any{
+		"id":      "chatcmpl-" + uuid.NewString(),
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": nil,
+		}},
+	}
+	return marshalJSONChunk(chunk)
+}
+
+func antigravityOpenAIChatFakeStreamChunks(model string, payload []byte) [][]byte {
+	id := strings.TrimSpace(gjson.GetBytes(payload, "id").String())
+	if id == "" {
+		id = "chatcmpl-" + uuid.NewString()
+	}
+	if responseModel := strings.TrimSpace(gjson.GetBytes(payload, "model").String()); responseModel != "" {
+		model = responseModel
+	}
+	created := gjson.GetBytes(payload, "created").Int()
+	if created <= 0 {
+		created = time.Now().Unix()
+	}
+	content := gjson.GetBytes(payload, "choices.0.message.content").String()
+	reasoning := gjson.GetBytes(payload, "choices.0.message.reasoning_content").String()
+	finishReason := strings.TrimSpace(gjson.GetBytes(payload, "choices.0.finish_reason").String())
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	firstDelta := map[string]any{"role": "assistant", "content": content}
+	if reasoning != "" {
+		firstDelta["reasoning_content"] = reasoning
+	}
+
+	first := map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         firstDelta,
+			"finish_reason": nil,
+		}},
+	}
+	final := map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": finishReason,
+		}},
+	}
+
+	return [][]byte{
+		marshalJSONChunk(first),
+		marshalJSONChunk(final),
+	}
+}
+
+func marshalJSONChunk(value any) []byte {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // Refresh refreshes the authentication credentials using the refresh token.

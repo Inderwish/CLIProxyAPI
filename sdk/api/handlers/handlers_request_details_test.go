@@ -98,6 +98,20 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 			wantModel:     "claude-sonnet-4-5(auto)",
 			wantErr:       false,
 		},
+		{
+			name:          "gemini fake stream suffix preserved",
+			inputModel:    "gemini-2.5-flash[假流]",
+			wantProviders: []string{"gemini"},
+			wantModel:     "gemini-2.5-flash[假流]",
+			wantErr:       false,
+		},
+		{
+			name:          "gemini fake stream suffix after thinking suffix preserved",
+			inputModel:    "gemini-2.5-flash(low)[假流]",
+			wantProviders: []string{"gemini"},
+			wantModel:     "gemini-2.5-flash(low)[假流]",
+			wantErr:       false,
+		},
 	}
 
 	for _, tt := range tests {

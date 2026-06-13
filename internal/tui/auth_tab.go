@@ -307,6 +307,55 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 		sb.WriteString("\n")
 	}
 
+	if creditsVal, ok := f["credits"]; ok {
+		credits, _ := creditsVal.(map[string]any)
+		if credits != nil {
+			known := getAnyString(credits, "known")
+			if known == "true" {
+				available := getAnyString(credits, "available")
+				creditAmount := getFloatString2(credits, "credit_amount")
+				minCreditAmount := getFloatString2(credits, "min_credit_amount")
+				paidTierID := getAnyString(credits, "paid_tier_id")
+				availText := T("credits_not_available")
+				if available == "true" {
+					availText = T("credits_available")
+				}
+				line := fmt.Sprintf("    │ %s %s",
+					labelStyle.Render(fmt.Sprintf("%-12s:", "Credits")),
+					valueStyle.Render(availText))
+				sb.WriteString(line)
+				sb.WriteString("\n")
+				if creditAmount != "" {
+					line = fmt.Sprintf("    │ %s %s",
+						labelStyle.Render(fmt.Sprintf("%-12s:", "Balance")),
+						valueStyle.Render(creditAmount))
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+				if minCreditAmount != "" {
+					line = fmt.Sprintf("    │ %s %s",
+						labelStyle.Render(fmt.Sprintf("%-12s:", "Min Usage")),
+						valueStyle.Render(minCreditAmount))
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+				if paidTierID != "" {
+					line = fmt.Sprintf("    │ %s %s",
+						labelStyle.Render(fmt.Sprintf("%-12s:", "Tier")),
+						valueStyle.Render(paidTierID))
+					sb.WriteString(line)
+					sb.WriteString("\n")
+				}
+			} else {
+				line := fmt.Sprintf("    │ %s %s",
+					labelStyle.Render(fmt.Sprintf("%-12s:", "Credits")),
+					valueStyle.Render(T("credits_unknown")))
+				sb.WriteString(line)
+				sb.WriteString("\n")
+			}
+		}
+	}
+
 	sb.WriteString("    └─────────────────────────────────────────────\n")
 	return sb.String()
 }
@@ -318,6 +367,27 @@ func getAnyString(m map[string]any, key string) string {
 		return ""
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+func getFloatString2(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch f := v.(type) {
+	case float64:
+		return fmt.Sprintf("%.2f", f)
+	case float32:
+		return fmt.Sprintf("%.2f", f)
+	case int:
+		return fmt.Sprintf("%.2f", float64(f))
+	case int64:
+		return fmt.Sprintf("%.2f", float64(f))
+	case string:
+		return v.(string)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func max(a, b int) int {

@@ -487,6 +487,26 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		hint, hintExists := coreauth.GetAntigravityCreditsHint(auth.ID)
+		if hintExists && hint.Known {
+			credits := gin.H{
+				"known":             true,
+				"available":         hint.Available,
+				"credit_amount":     fmt.Sprintf("%.2f", hint.CreditAmount),
+				"min_credit_amount": fmt.Sprintf("%.2f", hint.MinCreditAmount),
+				"paid_tier_id":      hint.PaidTierID,
+			}
+			if !hint.UpdatedAt.IsZero() {
+				credits["updated_at"] = hint.UpdatedAt
+			}
+			entry["credits"] = credits
+		} else {
+			entry["credits"] = gin.H{
+				"known": false,
+			}
+		}
+	}
 	return entry
 }
 

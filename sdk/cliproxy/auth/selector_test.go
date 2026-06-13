@@ -381,6 +381,34 @@ func TestRoundRobinSelectorPick_ThinkingSuffixSharesCursor(t *testing.T) {
 	}
 }
 
+func TestRoundRobinSelectorPick_FakeStreamSuffixSharesCursor(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+	auths := []*Auth{
+		{ID: "b"},
+		{ID: "a"},
+	}
+
+	first, err := selector.Pick(context.Background(), "gemini", "test-model[假流]", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() first error = %v", err)
+	}
+	second, err := selector.Pick(context.Background(), "gemini", "test-model", cliproxyexecutor.Options{}, auths)
+	if err != nil {
+		t.Fatalf("Pick() second error = %v", err)
+	}
+	if first == nil || second == nil {
+		t.Fatalf("Pick() returned nil auth")
+	}
+	if first.ID != "a" {
+		t.Fatalf("Pick() first auth.ID = %q, want %q", first.ID, "a")
+	}
+	if second.ID != "b" {
+		t.Fatalf("Pick() second auth.ID = %q, want %q", second.ID, "b")
+	}
+}
+
 func TestRoundRobinSelectorPick_CursorKeyCap(t *testing.T) {
 	t.Parallel()
 

@@ -133,12 +133,21 @@ func canonicalModelKey(model string) string {
 	if model == "" {
 		return ""
 	}
+	model = stripFakeStreamModelSuffix(model)
 	parsed := thinking.ParseSuffix(model)
 	modelName := strings.TrimSpace(parsed.ModelName)
 	if modelName == "" {
 		return model
 	}
 	return modelName
+}
+
+func stripFakeStreamModelSuffix(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.Index(model, "[假流]"); idx >= 0 {
+		return strings.TrimSpace(model[:idx])
+	}
+	return model
 }
 
 func authWebsocketsEnabled(auth *Auth) bool {

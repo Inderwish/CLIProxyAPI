@@ -381,6 +381,9 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		})
 		return
 	}
+	if updated, ok := compatGPTImage2RequestForResponses(h.Cfg, rawJSON); ok {
+		rawJSON = updated
+	}
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")

@@ -124,6 +124,9 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 		rawJSON = responsesconverter.ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName, rawJSON, stream)
 		stream = gjson.GetBytes(rawJSON, "stream").Bool()
 	}
+	if updated, ok := compatGPTImage2RequestForChat(h.Cfg, rawJSON); ok {
+		rawJSON = updated
+	}
 
 	if stream {
 		h.handleStreamingResponse(c, rawJSON)

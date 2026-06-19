@@ -1509,6 +1509,9 @@ func applyFakeStreamModelVariants(models []*ModelInfo) []*ModelInfo {
 	}
 
 	for _, model := range models {
+		if model == nil {
+			continue
+		}
 		addModel(model)
 
 		id := strings.TrimSpace(model.ID)

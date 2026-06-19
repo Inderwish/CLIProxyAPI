@@ -42,3 +42,27 @@ func TestGeminiFakeStreamResultWithHeartbeatEmitsBeforeCompletion(t *testing.T) 
 		t.Fatal("timed out waiting for final payload")
 	}
 }
+
+func TestNormalizeGeminiFakeStreamModel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		model      string
+		want       string
+		fakeStream bool
+	}{
+		{name: "fake stream variant", model: "gemini-3.1-pro-preview[假流]", want: "gemini-3.1-pro-preview", fakeStream: true},
+		{name: "fake stream variant with whitespace", model: " gemini-2.5-pro[假流] ", want: "gemini-2.5-pro", fakeStream: true},
+		{name: "normal model", model: "gemini-3.1-pro-preview", want: "gemini-3.1-pro-preview", fakeStream: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, fakeStream := normalizeGeminiFakeStreamModel(tc.model)
+			if got != tc.want || fakeStream != tc.fakeStream {
+				t.Fatalf("normalizeGeminiFakeStreamModel(%q) = (%q, %t), want (%q, %t)", tc.model, got, fakeStream, tc.want, tc.fakeStream)
+			}
+		})
+	}
+}

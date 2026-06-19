@@ -111,6 +111,12 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
+	if model, fakeStream := normalizeGeminiFakeStreamModel(req.Model); fakeStream {
+		req.Model = model
+		if req.Model == "" {
+			return resp, statusErr{code: http.StatusBadRequest, msg: "empty model after fake stream suffix"}
+		}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)
@@ -270,8 +276,8 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	if geminiFakeStreamModel(req.Model) {
-		req.Model = strings.TrimSpace(stripGeminiFakeStreamSuffix(req.Model))
+	if model, fakeStream := normalizeGeminiFakeStreamModel(req.Model); fakeStream {
+		req.Model = model
 		if req.Model == "" {
 			return nil, statusErr{code: http.StatusBadRequest, msg: "empty model after fake stream suffix"}
 		}
@@ -641,6 +647,12 @@ func (e *GeminiCLIExecutor) executeFakeStream(ctx context.Context, auth *cliprox
 
 // CountTokens counts tokens for the given request using the Gemini CLI API.
 func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if model, fakeStream := normalizeGeminiFakeStreamModel(req.Model); fakeStream {
+		req.Model = model
+		if req.Model == "" {
+			return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadRequest, msg: "empty model after fake stream suffix"}
+		}
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)

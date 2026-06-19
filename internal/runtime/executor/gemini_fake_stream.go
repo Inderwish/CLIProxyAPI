@@ -26,6 +26,13 @@ func stripGeminiFakeStreamSuffix(model string) string {
 	return strings.TrimSuffix(model, geminiFakeStreamSuffix)
 }
 
+func normalizeGeminiFakeStreamModel(model string) (string, bool) {
+	if !geminiFakeStreamModel(model) {
+		return model, false
+	}
+	return strings.TrimSpace(stripGeminiFakeStreamSuffix(model)), true
+}
+
 func geminiFakeStreamHeaders(headers http.Header) http.Header {
 	out := headers.Clone()
 	if out == nil {

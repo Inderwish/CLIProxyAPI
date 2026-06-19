@@ -6,6 +6,7 @@ func TestApplyFakeStreamModelVariants(t *testing.T) {
 	t.Parallel()
 
 	models := []*ModelInfo{
+		nil,
 		{
 			ID:          "gemini-3.1-pro-preview",
 			Object:      "model",

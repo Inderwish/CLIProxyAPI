@@ -1223,6 +1223,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 						if providerKey == "" {
 							providerKey = "openai-compatibility"
 						}
+						if fakeStreamVariantsEnabledForProvider(providerKey) {
+							ms = applyFakeStreamModelVariants(ms)
+						}
 						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
 					} else {
 						// Ensure stale registrations are cleared when model list becomes empty.
@@ -1243,6 +1246,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		key := provider
 		if key == "" {
 			key = strings.ToLower(strings.TrimSpace(a.Provider))
+		}
+		if fakeStreamVariantsEnabledForProvider(key) {
+			models = applyFakeStreamModelVariants(models)
 		}
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return
@@ -1471,6 +1477,59 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 		}
 	}
 	return filtered
+}
+
+func fakeStreamVariantsEnabledForProvider(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "gemini-cli")
+}
+
+const fakeStreamModelMarker = "[假流]"
+
+func applyFakeStreamModelVariants(models []*ModelInfo) []*ModelInfo {
+	if len(models) == 0 {
+		return models
+	}
+
+	out := make([]*ModelInfo, 0, len(models)*2)
+	seen := make(map[string]struct{}, len(models)*2)
+	addModel := func(model *ModelInfo) {
+		if model == nil {
+			return
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, model)
+	}
+
+	for _, model := range models {
+		addModel(model)
+
+		id := strings.TrimSpace(model.ID)
+		if id == "" || strings.Contains(id, fakeStreamModelMarker) {
+			continue
+		}
+
+		clone := *model
+		clone.ID = id + fakeStreamModelMarker
+		if clone.Name != "" && !strings.Contains(clone.Name, fakeStreamModelMarker) {
+			clone.Name = strings.TrimSpace(clone.Name) + fakeStreamModelMarker
+		}
+		if clone.DisplayName != "" && !strings.Contains(clone.DisplayName, fakeStreamModelMarker) {
+			clone.DisplayName = strings.TrimSpace(clone.DisplayName) + " " + fakeStreamModelMarker
+		}
+		if clone.Description != "" && !strings.Contains(clone.Description, fakeStreamModelMarker) {
+			clone.Description = strings.TrimSpace(clone.Description) + " " + fakeStreamModelMarker
+		}
+		addModel(&clone)
+	}
+	return out
 }
 
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {

@@ -1483,7 +1483,7 @@ func fakeStreamVariantsEnabledForProvider(provider string) bool {
 	return strings.EqualFold(strings.TrimSpace(provider), "gemini-cli")
 }
 
-const fakeStreamModelMarker = "[假流]"
+const fakeStreamModelMarker = "[\u5047\u6d41]"
 
 func applyFakeStreamModelVariants(models []*ModelInfo) []*ModelInfo {
 	if len(models) == 0 {

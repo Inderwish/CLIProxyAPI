@@ -15,11 +15,11 @@ func TestApplyFakeStreamModelVariants(t *testing.T) {
 			Description: "Gemini 3.1 Pro Preview",
 		},
 		{
-			ID:          "gemini-3.1-flash-lite-preview[假流]",
+			ID:          "gemini-3.1-flash-lite-preview[\u5047\u6d41]",
 			Object:      "model",
 			Type:        "gemini",
-			DisplayName: "Gemini 3.1 Flash Lite Preview [假流]",
-			Name:        "models/gemini-3.1-flash-lite-preview[假流]",
+			DisplayName: "Gemini 3.1 Flash Lite Preview [\u5047\u6d41]",
+			Name:        "models/gemini-3.1-flash-lite-preview[\u5047\u6d41]",
 		},
 	}
 
@@ -33,8 +33,8 @@ func TestApplyFakeStreamModelVariants(t *testing.T) {
 
 	for _, want := range []string{
 		"gemini-3.1-pro-preview",
-		"gemini-3.1-pro-preview[假流]",
-		"gemini-3.1-flash-lite-preview[假流]",
+		"gemini-3.1-pro-preview[\u5047\u6d41]",
+		"gemini-3.1-flash-lite-preview[\u5047\u6d41]",
 	} {
 		if ids[want] == nil {
 			t.Fatalf("missing model variant %q in %#v", want, ids)
@@ -43,11 +43,11 @@ func TestApplyFakeStreamModelVariants(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("model count = %d, want 3; ids=%#v", len(got), ids)
 	}
-	if gotName := ids["gemini-3.1-pro-preview[假流]"].Name; gotName != "models/gemini-3.1-pro-preview[假流]" {
-		t.Fatalf("fake stream name = %q, want models/gemini-3.1-pro-preview[假流]", gotName)
+	if gotName := ids["gemini-3.1-pro-preview[\u5047\u6d41]"].Name; gotName != "models/gemini-3.1-pro-preview[\u5047\u6d41]" {
+		t.Fatalf("fake stream name = %q, want models/gemini-3.1-pro-preview[\u5047\u6d41]", gotName)
 	}
-	if gotDisplay := ids["gemini-3.1-pro-preview[假流]"].DisplayName; gotDisplay != "Gemini 3.1 Pro Preview [假流]" {
-		t.Fatalf("fake stream display name = %q, want Gemini 3.1 Pro Preview [假流]", gotDisplay)
+	if gotDisplay := ids["gemini-3.1-pro-preview[\u5047\u6d41]"].DisplayName; gotDisplay != "Gemini 3.1 Pro Preview [\u5047\u6d41]" {
+		t.Fatalf("fake stream display name = %q, want Gemini 3.1 Pro Preview [\u5047\u6d41]", gotDisplay)
 	}
 }
 

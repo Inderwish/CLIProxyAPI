@@ -271,8 +271,13 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	if geminiFakeStreamModel(req.Model) {
-		req.Model = stripGeminiFakeStreamSuffix(req.Model)
-		return e.executeFakeStream(ctx, auth, req, opts)
+		req.Model = strings.TrimSpace(stripGeminiFakeStreamSuffix(req.Model))
+		if req.Model == "" {
+			return nil, statusErr{code: http.StatusBadRequest, msg: "empty model after fake stream suffix"}
+		}
+		return geminiFakeStreamResultWithHeartbeat(ctx, func() (*cliproxyexecutor.StreamResult, error) {
+			return e.executeFakeStream(ctx, auth, req, opts)
+		}), nil
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
